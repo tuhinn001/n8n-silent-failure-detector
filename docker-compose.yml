@@ -1,11 +1,11 @@
-# Core 1 ল্যাব — n8n queue mode (main + Redis + ২টা worker)
+# Core 1 lab -- n8n queue mode (main + Redis + 2 workers)
 #
-# কেন আলাদা compose: level4-docker/ হলো আপনার verified Level-4 গেট-প্রমাণ
-# (৩/৩ backup→restore চক্র)। ওটা অক্ষত থাকবে — এটা আলাদা ল্যাব,
-# আলাদা volume, আলাদা পোর্ট। দুটো একসাথে চালাবেন না।
+# Why a separate compose file: level4-docker/ is the verified Level-4 gate proof
+# (3/3 backup->restore cycles). That must stay untouched -- this is a separate lab,
+# separate volume, separate port. Do not run both at the same time.
 #
-# ⚠️ N8N_ENCRYPTION_KEY main আর worker-এ হুবহু এক হতে হবে,
-#    নইলে worker credential ডিক্রিপ্ট করতে পারবে না।
+# WARNING: N8N_ENCRYPTION_KEY must be identical on main and worker,
+#          otherwise the worker cannot decrypt credentials.
 
 x-n8n-common: &n8n-common
   image: docker.n8n.io/n8nio/n8n:latest
@@ -23,7 +23,7 @@ x-n8n-common: &n8n-common
     - QUEUE_HEALTH_CHECK_ACTIVE=true
     - GENERIC_TIMEZONE=Asia/Dhaka
     - N8N_RUNNERS_ENABLED=true
-    - N8N_LOG_LEVEL=debug          # ল্যাব — worker/stall আচরণ দেখতে দরকার
+    - N8N_LOG_LEVEL=debug          # lab setting -- needed to observe worker/stall behavior
   depends_on:
     postgres:
       condition: service_healthy
@@ -39,10 +39,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: n8n
     ports:
-      - "5433:5432"               # host থেকে psql/DBeaver দিয়ে দেখার জন্য
+      - "5433:5432"               # for inspecting via psql/DBeaver from the host
     volumes:
       - lab_postgres_data:/var/lib/postgresql/data
-      - ./initdb:/docker-entrypoint-initdb.d:ro   # ops ডাটাবেস অটো-তৈরি
+      - ./initdb:/docker-entrypoint-initdb.d:ro   # auto-creates the ops database
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U n8n -d n8n"]
       interval: 5s
@@ -58,12 +58,12 @@ services:
       timeout: 5s
       retries: 10
 
-  # ── main: UI + trigger/webhook ধরে, কাজ queue-তে ঠেলে দেয় ──────────
+  # -- main: handles UI + trigger/webhook, pushes work onto the queue --------
   n8n-main:
     <<: *n8n-common
     restart: always
     ports:
-      - "5679:5678"               # level4-docker (5678)-এর সাথে সংঘর্ষ এড়াতে
+      - "5679:5678"               # avoid clashing with level4-docker (5678)
     environment:
       - DB_TYPE=postgresdb
       - DB_POSTGRESDB_HOST=postgres
@@ -86,10 +86,10 @@ services:
     volumes:
       - lab_n8n_data:/home/node/.n8n
 
-  # ── worker: আসল execution এখানে চলে। এগুলোই আমরা মারব ────────────
+  # -- worker: this is where actual execution happens. This is what we kill --
   n8n-worker:
     <<: *n8n-common
-    restart: "no"                 # ⚠️ ল্যাবে ইচ্ছাকৃত: মারলে যেন নিজে ফিরে না আসে
+    restart: "no"                 # WARNING: intentional in this lab -- must not self-heal after a kill
     command: worker
     deploy:
       replicas: 2
