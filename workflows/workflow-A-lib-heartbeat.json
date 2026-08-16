@@ -1,0 +1,96 @@
+{
+  "name": "lib-heartbeat",
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            { "name": "workflow_id" },
+            { "name": "run_id" },
+            { "name": "phase" }
+          ]
+        }
+      },
+      "id": "hb000001-0001-4a00-8000-000000000001",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+          "conditions": [
+            { "id": "c-01", "leftValue": "={{ $json.phase }}", "rightValue": "start", "operator": { "type": "string", "operation": "equals" } }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "hb000001-0002-4a00-8000-000000000002",
+      "name": "Is Start Phase?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO wf_run (run_id, workflow_id, execution_id)\nVALUES ('{{ $json.run_id }}', '{{ $json.workflow_id }}', '{{ $json.run_id }}')\nON CONFLICT (run_id) DO UPDATE SET attempt = wf_run.attempt + 1\nRETURNING run_id, attempt;",
+        "options": {}
+      },
+      "id": "hb000001-0003-4a00-8000-000000000003",
+      "name": "Postgres - Open Run",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [440, -100]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE wf_run SET status = 'success', finished_at = now()\nWHERE run_id = '{{ $json.run_id }}'\nRETURNING run_id;",
+        "options": {}
+      },
+      "id": "hb000001-0004-4a00-8000-000000000004",
+      "name": "Postgres - Close Run",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [440, 100]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO wf_heartbeat (workflow_id, last_success_at)\nVALUES ('{{ $('Execute Workflow Trigger').item.json.workflow_id }}', now())\nON CONFLICT (workflow_id) DO UPDATE SET last_success_at = now()\nRETURNING workflow_id, last_success_at;",
+        "options": {}
+      },
+      "id": "hb000001-0005-4a00-8000-000000000005",
+      "name": "Postgres - Beat Heartbeat",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [660, 100]
+    },
+    {
+      "parameters": {},
+      "id": "hb000001-0006-4a00-8000-000000000006",
+      "name": "Done",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [880, 0]
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": { "main": [[{ "node": "Is Start Phase?", "type": "main", "index": 0 }]] },
+    "Is Start Phase?": {
+      "main": [
+        [{ "node": "Postgres - Open Run", "type": "main", "index": 0 }],
+        [{ "node": "Postgres - Close Run", "type": "main", "index": 0 }]
+      ]
+    },
+    "Postgres - Open Run": { "main": [[{ "node": "Done", "type": "main", "index": 0 }]] },
+    "Postgres - Close Run": { "main": [[{ "node": "Postgres - Beat Heartbeat", "type": "main", "index": 0 }]] },
+    "Postgres - Beat Heartbeat": { "main": [[{ "node": "Done", "type": "main", "index": 0 }]] }
+  },
+  "pinData": {},
+  "meta": { "instanceId": "core1-lib-heartbeat" }
+}
