@@ -1,0 +1,99 @@
+# Core 1 ল্যাব — n8n queue mode (main + Redis + ২টা worker)
+#
+# কেন আলাদা compose: level4-docker/ হলো আপনার verified Level-4 গেট-প্রমাণ
+# (৩/৩ backup→restore চক্র)। ওটা অক্ষত থাকবে — এটা আলাদা ল্যাব,
+# আলাদা volume, আলাদা পোর্ট। দুটো একসাথে চালাবেন না।
+#
+# ⚠️ N8N_ENCRYPTION_KEY main আর worker-এ হুবহু এক হতে হবে,
+#    নইলে worker credential ডিক্রিপ্ট করতে পারবে না।
+
+x-n8n-common: &n8n-common
+  image: docker.n8n.io/n8nio/n8n:latest
+  environment: &n8n-env
+    - DB_TYPE=postgresdb
+    - DB_POSTGRESDB_HOST=postgres
+    - DB_POSTGRESDB_PORT=5432
+    - DB_POSTGRESDB_DATABASE=n8n
+    - DB_POSTGRESDB_USER=n8n
+    - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
+    - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+    - EXECUTIONS_MODE=queue
+    - QUEUE_BULL_REDIS_HOST=redis
+    - QUEUE_BULL_REDIS_PORT=6379
+    - QUEUE_HEALTH_CHECK_ACTIVE=true
+    - GENERIC_TIMEZONE=Asia/Dhaka
+    - N8N_RUNNERS_ENABLED=true
+    - N8N_LOG_LEVEL=debug          # ল্যাব — worker/stall আচরণ দেখতে দরকার
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16
+    restart: always
+    environment:
+      POSTGRES_USER: n8n
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: n8n
+    ports:
+      - "5433:5432"               # host থেকে psql/DBeaver দিয়ে দেখার জন্য
+    volumes:
+      - lab_postgres_data:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d:ro   # ops ডাটাবেস অটো-তৈরি
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U n8n -d n8n"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── main: UI + trigger/webhook ধরে, কাজ queue-তে ঠেলে দেয় ──────────
+  n8n-main:
+    <<: *n8n-common
+    restart: always
+    ports:
+      - "5679:5678"               # level4-docker (5678)-এর সাথে সংঘর্ষ এড়াতে
+    environment:
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=n8n
+      - DB_POSTGRESDB_USER=n8n
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      - EXECUTIONS_MODE=queue
+      - QUEUE_BULL_REDIS_HOST=redis
+      - QUEUE_BULL_REDIS_PORT=6379
+      - GENERIC_TIMEZONE=Asia/Dhaka
+      - N8N_RUNNERS_ENABLED=true
+      - N8N_LOG_LEVEL=debug
+      - N8N_HOST=localhost
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - N8N_SECURE_COOKIE=false
+      - WEBHOOK_URL=http://localhost:5679/
+    volumes:
+      - lab_n8n_data:/home/node/.n8n
+
+  # ── worker: আসল execution এখানে চলে। এগুলোই আমরা মারব ────────────
+  n8n-worker:
+    <<: *n8n-common
+    restart: "no"                 # ⚠️ ল্যাবে ইচ্ছাকৃত: মারলে যেন নিজে ফিরে না আসে
+    command: worker
+    deploy:
+      replicas: 2
+
+volumes:
+  lab_postgres_data:
+  lab_n8n_data:
