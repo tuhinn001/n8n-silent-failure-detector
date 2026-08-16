@@ -1,0 +1,236 @@
+{
+  "name": "watchdog",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "minutes", "minutesInterval": 2 }] }
+      },
+      "id": "wd000001-0001-4a00-8000-000000000001",
+      "name": "Schedule Trigger (every 2 min)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT e.workflow_id, e.workflow_name, e.severity, h.last_success_at,\n  EXTRACT(EPOCH FROM (now() - h.last_success_at))/60 AS silent_min,\n  'absent_heartbeat' AS reason\nFROM wf_expectation e\nLEFT JOIN wf_heartbeat h ON h.workflow_id = e.workflow_id\nWHERE e.enabled\n  AND (h.last_success_at IS NULL\n       OR now() - h.last_success_at > make_interval(mins => e.expected_every_min + e.grace_min));",
+        "options": {}
+      },
+      "id": "wd000001-0002-4a00-8000-000000000002",
+      "name": "Sweep - Absent Heartbeats",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [260, 0]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT run_id, workflow_id, execution_id, started_at,\n  'open_run_stuck' AS reason\nFROM wf_run\nWHERE status = 'running'\n  AND started_at < now() - interval '3 minutes';",
+        "options": {}
+      },
+      "id": "wd000001-0003-4a00-8000-000000000003",
+      "name": "Sweep - Open Runs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [260, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT run_id, workflow_id, attempt, finished_at,\n  'silent_replay' AS reason\nFROM wf_run\nWHERE attempt > 1\n  AND finished_at > now() - interval '1 hour';",
+        "options": {}
+      },
+      "id": "wd000001-0004-4a00-8000-000000000004",
+      "name": "Sweep - Silent Replays",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [260, 600]
+    },
+    {
+      "parameters": {
+        "mode": "append",
+        "numberInputs": 3
+      },
+      "id": "wd000001-0005-4a00-8000-000000000005",
+      "name": "Merge - All Findings",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.map(item => {\n  item.json.alert_key = item.json.workflow_id + '::' + item.json.reason;\n  item.json.source = 'current_finding';\n  return item;\n});"
+      },
+      "id": "wd000001-0006-4a00-8000-000000000006",
+      "name": "Code - Build Alert Key",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO wf_alert (alert_key)\nVALUES ('{{ $json.alert_key }}')\nON CONFLICT (alert_key) DO UPDATE SET last_sent = now(), resolved_at = NULL\n  WHERE wf_alert.last_sent < now() - interval '30 minutes'\nRETURNING alert_key, first_seen;",
+        "options": { "queryBatching": "independently" }
+      },
+      "id": "wd000001-0007-4a00-8000-000000000007",
+      "name": "Guard - Alert Cooldown",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [940, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT alert_key, first_seen, last_sent, 'open_alert' AS source\nFROM wf_alert\nWHERE resolved_at IS NULL;",
+        "options": {}
+      },
+      "id": "wd000001-000c-4a00-8000-00000000000c",
+      "name": "Sweep - Open Alerts",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [260, 1200]
+    },
+    {
+      "parameters": {
+        "mode": "append",
+        "numberInputs": 2
+      },
+      "id": "wd000001-000d-4a00-8000-00000000000d",
+      "name": "Merge - Current vs Open",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [940, 1200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// A recovery notice: any alert_key that is currently OPEN (resolved_at IS NULL in wf_alert)\n// but is NOT among this sweep's current findings has cleared -- the underlying problem\n// stopped reproducing. Mark it resolved and notify once.\nconst items = $input.all();\nconst currentKeys = new Set(\n  items.filter(i => i.json.source === 'current_finding').map(i => i.json.alert_key)\n);\nconst openAlerts = items.filter(i => i.json.source === 'open_alert');\nconst resolved = openAlerts.filter(i => !currentKeys.has(i.json.alert_key));\nreturn resolved.map(i => ({ json: i.json }));"
+      },
+      "id": "wd000001-000e-4a00-8000-00000000000e",
+      "name": "Code - Detect Resolved",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1160, 1200]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE wf_alert SET resolved_at = now()\nWHERE alert_key = '{{ $json.alert_key }}'\n  AND resolved_at IS NULL\nRETURNING alert_key, first_seen, last_sent, resolved_at;",
+        "options": { "queryBatching": "independently" }
+      },
+      "id": "wd000001-000f-4a00-8000-00000000000f",
+      "name": "Mark Resolved",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1380, 1200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Same placeholder-item quirk as the alert cooldown guard: a 0-row UPDATE still\n// emits a {\"success\": true} item. Only pass through rows that actually got\n// resolved_at set this sweep (i.e. genuinely newly-resolved alerts).\nreturn $input.all().filter(item => item.json.alert_key !== undefined && item.json.alert_key !== null);"
+      },
+      "id": "wd000001-0011-4a00-8000-000000000011",
+      "name": "Filter - Only Real Resolutions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1600, 1200]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "C0BMERMPD97"
+        },
+        "messageType": "text",
+        "text": "=✅ Resolved — {{$json.alert_key.split('::')[1]}} — workflow `{{$json.alert_key.split('::')[0]}}` (was alerting since {{$json.first_seen}})",
+        "otherOptions": {}
+      },
+      "id": "wd000001-0012-4a00-8000-000000000012",
+      "name": "Slack - Send Resolved",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [1820, 1200]
+    },
+    {
+      "parameters": {
+        "url": "https://hc-ping.com/8e0f9a47-c44a-41f4-8278-e815ab706896",
+        "options": {}
+      },
+      "id": "wd000001-0009-4a00-8000-000000000009",
+      "name": "Ping Dead-Man Switch (healthchecks.io)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [260, 900],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Only pass through items where the cooldown guard actually returned an alert_key\n// (i.e. an alert was NOT suppressed by the 30-min cooldown window).\n// NOTE: n8n's Postgres node always emits one output item per input item, even when\n// an UPDATE's WHERE clause matches 0 rows (it returns a {\"success\": true} placeholder\n// instead of dropping the item). Without this filter, Slack would fire for every\n// finding on every sweep cycle regardless of cooldown -- this node is what makes the\n// 30-minute alert cooldown actually work end-to-end. Verified via T6 in the test matrix.\nreturn $input.all().filter(item => item.json.alert_key !== undefined && item.json.alert_key !== null);"
+      },
+      "id": "wd000001-000b-4a00-8000-00000000000b",
+      "name": "Filter - Only Real Alerts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "C0BMERMPD97"
+        },
+        "messageType": "text",
+        "text": "=🚨 {{$('Code - Build Alert Key').item.json.reason}} — workflow `{{$('Code - Build Alert Key').item.json.workflow_id}}` {{JSON.stringify($('Code - Build Alert Key').item.json)}}",
+        "otherOptions": {}
+      },
+      "id": "wd000001-0010-4a00-8000-00000000000a",
+      "name": "Slack - Send Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [1160, 300]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger (every 2 min)": {
+      "main": [
+        [
+          { "node": "Sweep - Absent Heartbeats", "type": "main", "index": 0 },
+          { "node": "Sweep - Open Runs", "type": "main", "index": 0 },
+          { "node": "Sweep - Silent Replays", "type": "main", "index": 0 },
+          { "node": "Ping Dead-Man Switch (stub - swap to healthchecks.io)", "type": "main", "index": 0 },
+          { "node": "Sweep - Open Alerts", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Sweep - Absent Heartbeats": { "main": [[{ "node": "Merge - All Findings", "type": "main", "index": 0 }]] },
+    "Sweep - Open Runs": { "main": [[{ "node": "Merge - All Findings", "type": "main", "index": 1 }]] },
+    "Sweep - Silent Replays": { "main": [[{ "node": "Merge - All Findings", "type": "main", "index": 2 }]] },
+    "Merge - All Findings": { "main": [[{ "node": "Code - Build Alert Key", "type": "main", "index": 0 }]] },
+    "Code - Build Alert Key": {
+      "main": [
+        [
+          { "node": "Guard - Alert Cooldown", "type": "main", "index": 0 },
+          { "node": "Merge - Current vs Open", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Guard - Alert Cooldown": { "main": [[{ "node": "Filter - Only Real Alerts", "type": "main", "index": 0 }]] },
+    "Filter - Only Real Alerts": { "main": [[{ "node": "Slack - Send Alert", "type": "main", "index": 0 }]] },
+    "Sweep - Open Alerts": { "main": [[{ "node": "Merge - Current vs Open", "type": "main", "index": 1 }]] },
+    "Merge - Current vs Open": { "main": [[{ "node": "Code - Detect Resolved", "type": "main", "index": 0 }]] },
+    "Code - Detect Resolved": { "main": [[{ "node": "Mark Resolved", "type": "main", "index": 0 }]] },
+    "Mark Resolved": { "main": [[{ "node": "Filter - Only Real Resolutions", "type": "main", "index": 0 }]] },
+    "Filter - Only Real Resolutions": { "main": [[{ "node": "Slack - Send Resolved", "type": "main", "index": 0 }]] }
+  },
+  "_note_connections": "Schedule Trigger's 4th target (Ping Dead-Man Switch) sometimes does not survive JSON import in this n8n version -- if the canvas shows it disconnected after import, manually drag a link from Schedule Trigger's output dot to the Ping node's input dot.",
+  "pinData": {},
+  "meta": { "instanceId": "core1-watchdog" }
+}
