@@ -8,6 +8,12 @@ This repo is a working implementation that closes that gap: a heartbeat layer, a
 
 > **Honest labelling:** this is a self-built lab project, not a paid client delivery. Every number below was measured on a live instance and the raw test logs are included in [`test-logs/`](test-logs/) — including the tests that found real bugs in my own build.
 
+## Walkthrough video
+
+An 11:05 recorded walkthrough covers the system node-by-node — the heartbeat emitter, all three watchdog sweeps, the cooldown-guarded Slack alert, the dead-man's switch, and the resolve notice — then proves it live: a real execution against the real database, the three bugs above shown against their actual test evidence, a backup -> destroy -> restore drill, and the honest n8n vs Make vs Zapier numbers from *Honest limitations* above. A 9:42 cut without the platform-comparison section is also available.
+
+Not committed to this repo as a binary — a 20 MB+ video file doesn't belong in git history. Available on request.
+
 ---
 
 ## The problem, stated precisely
